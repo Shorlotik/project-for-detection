@@ -1,0 +1,233 @@
+# 1/10 Устанавливаем и импортируем библиотеки
+print(" 1/10 Устанавливаем и импортируем библиотеки...")
+!pip install ultralytics norfair opencv-python-headless supervision tqdm --quiet
+import cv2
+import os
+import pandas as pd
+import numpy as np
+from ultralytics import YOLO
+from norfair import Detection, Tracker
+from supervision.draw.color import ColorPalette
+from google.colab import drive
+from tqdm.notebook import tqdm
+print(" Библиотеки установлены и импортированы.")
+
+# 2/10 Подключаем Google Диск
+print(" 2/10 Подключаем Google Диск...")
+drive.mount('/content/drive')
+video_path = '/content/drive/MyDrive/Perekrestok.mp4'
+print(f" Видео подключено: {video_path}")
+
+# 3/10 Загружаем и настраиваем модель YOLOv8 для максимальной точности
+print(" 3/10 Загружаем и настраиваем модель YOLOv8...")
+model = YOLO('yolov8n.pt', verbose=False)
+model.overrides['conf'] = 0.6  # Повышенный порог уверенности
+model.overrides['iou'] = 0.45  # Оптимальный баланс точности/recall
+model.overrides['agnostic_nms'] = True  # Лучшая обработка перекрытий
+print(" Модель загружена с оптимизированными параметрами.")
+
+# 4/10 Настройка классов и трекера с повышенной точностью
+print(" 4/10 Настройка классов и трекера...")
+vehicle_classes = ['car', 'bus', 'motorcycle']
+class_id_map = {0: 'person', 1: 'bicycle', 2: 'car', 3: 'motorcycle', 5: 'bus', 9: 'traffic light'}
+
+# Инициализация трекера с улучшенными параметрами
+tracker = Tracker(
+    distance_function="euclidean",
+    distance_threshold=50,
+    hit_counter_max=30,
+    initialization_delay=3
+)
+vehicle_info = {}
+red_light_violations = []
+print(" Классы и трекер настроены с повышенной точностью.")
+
+# 5/10 Улучшенная функция определения цвета светофора
+print(" 5/10 Готовим улучшенную функцию определения цвета светофора...")
+def get_traffic_light_color(traffic_light_crop):
+    # Улучшение качества изображения
+    enhanced = cv2.convertScaleAbs(traffic_light_crop, alpha=1.2, beta=20)
+    kernel = np.ones((5,5), np.uint8)
+    hsv = cv2.cvtColor(enhanced, cv2.COLOR_BGR2HSV)
+
+    # Оптимизированные цветовые диапазоны
+    red_lower1, red_upper1 = np.array([0, 120, 120]), np.array([10, 255, 255])
+    red_lower2, red_upper2 = np.array([170, 120, 120]), np.array([180, 255, 255])
+    green_lower, green_upper = np.array([40, 80, 80]), np.array([80, 255, 255])
+    yellow_lower, yellow_upper = np.array([20, 120, 120]), np.array([40, 255, 255])
+
+    # Морфологические операции для улучшения детекции
+    red_mask = cv2.morphologyEx(cv2.inRange(hsv, red_lower1, red_upper1), cv2.MORPH_OPEN, kernel) + \
+              cv2.morphologyEx(cv2.inRange(hsv, red_lower2, red_upper2), cv2.MORPH_OPEN, kernel)
+    green_mask = cv2.morphologyEx(cv2.inRange(hsv, green_lower, green_upper), cv2.MORPH_OPEN, kernel)
+    yellow_mask = cv2.morphologyEx(cv2.inRange(hsv, yellow_lower, yellow_upper), cv2.MORPH_OPEN, kernel)
+
+    # Анализ доминирующего цвета с повышенными порогами
+    red_pixels = cv2.countNonZero(red_mask)
+    green_pixels = cv2.countNonZero(green_mask)
+    yellow_pixels = cv2.countNonZero(yellow_mask)
+
+    if red_pixels > 100 and red_pixels > max(green_pixels, yellow_pixels)*1.5:
+        return 'red'
+    elif green_pixels > 100 and green_pixels > max(red_pixels, yellow_pixels)*1.5:
+        return 'green'
+    elif yellow_pixels > 100 and yellow_pixels > max(red_pixels, green_pixels)*1.5:
+        return 'yellow'
+    return 'unknown'
+print(" Улучшенная функция готова.")
+
+# 6/10 Подготовка к обработке видео
+print(" 6/10 Подготовка к обработке видео...")
+cap = cv2.VideoCapture(video_path)
+fps = cap.get(cv2.CAP_PROP_FPS)
+width, height = int(cap.get(3)), int(cap.get(4))
+frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+out_path = '/content/drive/MyDrive/Output_Enhanced.mp4'
+out = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
+frame_number = 0
+traffic_light_zone = None
+traffic_light_color = 'unknown'
+frame_limit = int(fps * 3)  # 3 секунды для определения остановки
+print(f" Видео открыто. Размер: {width}x{height}, FPS: {fps}, Всего кадров: {frame_count}")
+
+# 7/10 Улучшенная обработка кадров
+print(" 7/10 Обработка видео с повышенной точностью...")
+text_color = (255, 255, 255)  # Белый цвет для текста
+vehicle_color = (0, 255, 0)  # Зеленый цвет для транспортных средств
+traffic_light_box_color = (0, 255, 255)  # Желтый для светофора
+
+with tqdm(total=frame_count, desc=" Обработка кадров") as pbar:
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        frame_number += 1
+        pbar.update(1)
+
+        # Улучшение качества кадра
+        enhanced_frame = cv2.convertScaleAbs(frame, alpha=1.2, beta=20)
+
+        # Детекция с увеличенным размером обработки
+        results = model(enhanced_frame, imgsz=1280, verbose=False)[0]
+        detections = results.boxes
+        det_xywh = []
+        class_names = []
+
+        # Поиск светофора в кадре
+        traffic_light_detected = False
+        for det in detections:
+            cls_id = int(det.cls[0])
+            name = class_id_map.get(cls_id, 'unknown')
+            x1, y1, x2, y2 = map(int, det.xyxy[0])
+            cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+
+            if name == 'traffic light' and not traffic_light_detected:
+                traffic_light_detected = True
+                traffic_light_zone = [x1, y1, x2, y2]
+                light_crop = enhanced_frame[y1:y2, x1:x2]
+                traffic_light_color = get_traffic_light_color(light_crop)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), traffic_light_box_color, 2)
+                cv2.putText(frame, f'Light: {traffic_light_color}', (x1, y1 - 10),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, traffic_light_box_color, 2)
+
+            if name in vehicle_classes:
+                det_xywh.append(np.array([cx, cy]))
+                class_names.append(name)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), vehicle_color, 2)
+
+        # Трекинг объектов
+        tracked = tracker.update([Detection(p) for p in det_xywh])
+        for det, track in zip(det_xywh, tracked):
+            track_id = track.id
+            cx, cy = det.astype(int)
+            label = class_names[tracked.index(track)]
+
+            if track_id not in vehicle_info:
+                vehicle_info[track_id] = {
+                    'class': label,
+                    'last_seen_frame': frame_number,
+                    'stopped_at_red': None,
+                    'went_on_red': False,
+                    'stopped_at_green': None,
+                    'positions': []  # Для анализа траектории
+                }
+
+            info = vehicle_info[track_id]
+            info['positions'].append((cx, cy))  # Сохраняем позицию
+
+            # Анализ поведения на красный свет
+            if traffic_light_color == 'red':
+                if info['stopped_at_red'] is None:
+                    info['stopped_at_red'] = frame_number
+                else:
+                    if info['stopped_at_red'] is not None:
+                        duration = frame_number - info['stopped_at_red']
+                        info['stopped_at_red'] = None
+                        if duration > frame_limit:
+                            info['waited_time_red'] = duration / fps
+
+            # Анализ поведения на зеленый свет
+            if traffic_light_color == 'green':
+                if info['stopped_at_green'] is None:
+                    info['stopped_at_green'] = frame_number
+                else:
+                    if info['stopped_at_green'] is not None:
+                        green_duration = frame_number - info['stopped_at_green']
+                        info['stopped_at_green'] = None
+                        if green_duration > frame_limit:
+                            info['lost_time_green'] = green_duration / fps
+
+            # Детекция нарушения - проезд на красный
+            if (traffic_light_color == 'red' and
+                info['last_seen_frame'] < frame_number - 1 and
+                len(info['positions']) > 10):  # Проверяем, что объект действительно двигался
+
+                if not info['went_on_red']:
+                    red_light_violations.append({
+                        'id': track_id,
+                        'class': label,
+                        'frame': frame_number,
+                        'time': frame_number / fps,
+                        'position': (cx, cy)
+                    })
+                    info['went_on_red'] = True
+                    # Выделяем нарушителя
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
+                    cv2.putText(frame, 'VIOLATION!', (x1, y1 - 30),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+
+            info['last_seen_frame'] = frame_number
+            cv2.circle(frame, (cx, cy), 5, text_color, -1)
+            cv2.putText(frame, f'{label} ID:{track_id}', (cx, cy - 10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, text_color, 2)
+
+        out.write(frame)
+
+cap.release()
+out.release()
+print(" 8/10 Обработка видео завершена. Видео сохранено.")
+
+# 9/10 Сохраняем улучшенный CSV отчёт
+print(" 9/10 Генерация расширенного CSV отчёта...")
+if red_light_violations:
+    df = pd.DataFrame(red_light_violations)
+    if not df.empty:
+        df['waited_time_red'] = df['id'].apply(lambda x: vehicle_info.get(x, {}).get('waited_time_red', 0))
+        df['lost_time_green'] = df['id'].apply(lambda x: vehicle_info.get(x, {}).get('lost_time_green', 0))
+        # Добавляем координаты
+        df['x_pos'] = df['position'].apply(lambda x: x[0])
+        df['y_pos'] = df['position'].apply(lambda x: x[1])
+        df.drop('position', axis=1, inplace=True)
+    else:
+        print(" Нарушения обнаружены, но DataFrame пуст")
+else:
+    print(" Нарушений не обнаружено, создаём пустой отчёт")
+    df = pd.DataFrame(columns=['id', 'class', 'frame', 'time', 'waited_time_red', 'lost_time_green', 'x_pos', 'y_pos'])
+
+csv_path = '/content/drive/MyDrive/violations_report_enhanced.csv'
+df.to_csv(csv_path, index=False)
+print(f" Улучшенный отчёт сохранён: {csv_path}")
+
+# 10/10 Завершено!
+print(" 10/10 Готово! Улучшенные видео и отчёт сохранены в Google Drive.")
