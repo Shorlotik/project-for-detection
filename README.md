@@ -16,7 +16,7 @@
 
 ## Запуск в Google Colab
 
-1. Откройте блокнот в Colab: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/mf-grsu-by/your-repo/blob/main/traffic_violation_detection.ipynb)
+1. Откройте блокнот в Colab: [![Open In Colab](https://colab.research.google.com/drive/1xPizbLWLvZNsFdL8vMvJkicg2ECdQTs1#scrollTo=UIm2QzpKysij)
 
 2. Подготовьте данные:
    - Загрузите видеофайл на Google Диск
